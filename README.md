@@ -12,7 +12,7 @@ Manage VITE Blockchain API via @vite.js NODE.JS package within Python script
 
 ### How to use
 ```python
-from vitejs_adapter import ViteJsAdapter
+from src import ViteJsAdapter
 
 provider = ViteJsAdapter()
 
