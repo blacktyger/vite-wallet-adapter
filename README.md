@@ -1,16 +1,27 @@
 # vite-wallet-adapter
 Manage VITE Blockchain API via @vite.js NODE.JS package within Python script
 
+----
+
 ### Requirements
 - Node.js and npm
 - Python 3.11
+---
 
 ### Installation
 - clone the repository
 - `cd vite-wallet-adapte\vitejs`
 - `npm install`
+---
 
 ### How to use
+
+#### via CLI
+```bash 
+python vite_adapter.py [command] [args]
+````
+
+#### inside python script
 ```python
 from src import ViteJsAdapter
 
@@ -24,14 +35,8 @@ print(provider.balance(address=wallet['data']['address']))
 
 # Get list of wallet transactions using wallet address
 print(provider.transactions(address=wallet['data']['address'], page_size=10, page_index=0))
-
-# Send transaction
-provider.send(**kwargs)
-
-# Receive pending transactions
-provider.update(**kwargs)
 ```
-
+---
 ### Extra Confriguration
 To change Vite node address edit `vitejs/provider.js` file.
 
