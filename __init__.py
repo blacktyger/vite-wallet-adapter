@@ -189,7 +189,7 @@ class ViteJsAdapter:
         while self.transactions_response['error'] and try_counter:
             try_counter -= 1
 
-            if 'timeout' in response['msg']:
+            if 'timeout' in self.transactions_response['msg']:
                 self.logger.warning(f"{self.transactions_response['msg']} re-try transactions ({try_counter} left)")
                 self._run_command(command)
             else:
@@ -198,7 +198,7 @@ class ViteJsAdapter:
         if not try_counter:
             self.transactions_response = {'error': 1, 'msg': "too many transactions fail attempts", 'data': None}
             self.status = 'failed'
-        elif self.self.transactions_response['error']:
+        elif self.transactions_response['error']:
             self.status = 'failed'
         else:
             self.status = 'finished'
