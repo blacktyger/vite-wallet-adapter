@@ -19,6 +19,7 @@ class ViteJsAdapter:
     """
     Execute @vitejs functions via python class. Possible operations:
     - Create new VITE wallet | create_wallet()
+    - Get wallet transactions | transactions()
     - Receive pending transactions | update()
     - Get wallet balance | get_balance()
 
@@ -121,6 +122,18 @@ class ViteJsAdapter:
 
         return response
 
+    def _get_last_tx_id(self, **kwargs) -> int:
+        kwargs = {'mnemonics': kwargs['mnemonics'],
+                  'address_id': kwargs['address_id']}
+        balance = self._balance(**kwargs)
+
+        if not balance['error']:
+            try:
+                return balance['data']['balance']['blockCount']
+            except Exception as e:
+                self.logger.warning(f"_get_last_tx_id(): {e}")
+        return 0
+    
     def create_wallet(self):
         """
         Create new VITE wallet
@@ -155,23 +168,42 @@ class ViteJsAdapter:
         :param page_index: str
         :param page_size: str
         """
+        
+        try_counter = 5
         args = ('address', 'page_index', 'page_size')
 
         if all(arg in args for arg in kwargs):
+            kwargs['page_index'] = str(kwargs['page_index'])
+            kwargs['page_size'] = str(kwargs['page_size'])
+
             command = ['node', self.script, 'transactions',
+                       '-a', kwargs['address'],
                        '-i', kwargs['page_index'],
                        '-s', kwargs['page_size']
-                       ]
-            self.transactions_response = self._run_command(command)
+                      ]
+        else:
+            return {'error': 1, 'msg': f'missing args, any of {args}', 'data': None}
 
-            if self.send_response['error']:
-                self.status = 'failed'
+        self.transactions_response = self._run_command(command)
+
+        while self.transactions_response['error'] and try_counter:
+            try_counter -= 1
+
+            if 'timeout' in response['msg']:
+                self.logger.warning(f"{self.transactions_response['msg']} re-try transactions ({try_counter} left)")
+                self._run_command(command)
             else:
-                self.status = 'finished'
+                return self.transactions_response
 
-            self.logger.info(f"{self.status} |  {self.transactions_response['msg']}")
+        if not try_counter:
+            self.transactions_response = {'error': 1, 'msg': "too many transactions fail attempts", 'data': None}
+            self.status = 'failed'
+        elif self.self.transactions_response['error']:
+            self.status = 'failed'
+        else:
+            self.status = 'finished'
 
-            return self.transactions_response
+        return self.transactions_response
 
     def send(self, **kwargs) -> dict:
         """
@@ -200,40 +232,42 @@ class ViteJsAdapter:
                        '-t', kwargs['token_id'],
                        '-a', kwargs['amount']
                        ]
+        else:
+            return {'error': 1, 'msg': f'missing args, any of {args}', 'data': None}
+            
+        self.send_response = self._run_command(command)
 
-            self.send_response = self._run_command(command)
+        while self.send_response['error'] and try_counter:
+            if 'timeout' in self.send_response['msg'].lower():
+                try_counter -= 1
+                time.sleep(1)
+                current_tx_id = self._get_last_tx_id(**kwargs)
 
-            while self.send_response['error'] and try_counter:
-                if 'timeout' in self.send_response['msg'].lower():
-                    try_counter -= 1
-                    time.sleep(1)
+                while not current_tx_id:
+                    self.logger.critical(f"problem with getting balance, re-try...")
                     current_tx_id = self._get_last_tx_id(**kwargs)
 
-                    while not current_tx_id:
-                        self.logger.critical(f"problem with getting balance, re-try...")
-                        current_tx_id = self._get_last_tx_id(**kwargs)
+                if current_tx_id == last_tx_id:
+                    self.logger.warning(f"{self.send_response['msg']}, re-try send ({try_counter} left)..")
+                    time.sleep(1)
+                    self.send_response = self._run_command(command)
 
-                    if current_tx_id == last_tx_id:
-                        self.logger.warning(f"{self.send_response['msg']}, re-try send ({try_counter} left)..")
-                        time.sleep(1)
-                        self.send_response = self._run_command(command)
-
-                    else:
-                        self.logger.info(f"New TX last ID [{current_tx_id}], finishing process..")
-                        break
                 else:
+                    self.logger.info(f"New TX last ID [{current_tx_id}], finishing process..")
                     break
-
-            if try_counter < 1:
-                self.send_response = {'error': 1, 'msg': "Too many failed attempts", 'data': None}
-                self.status = 'failed'
-            elif self.send_response['error']:
-                self.status = 'failed'
             else:
-                self.status = 'finished'
+                break
 
-            self.logger.info(f"{self.status} |  {self.send_response['msg']}")
-            return self.send_response
+        if try_counter < 1:
+            self.send_response = {'error': 1, 'msg': "Too many failed attempts", 'data': None}
+            self.status = 'failed'
+        elif self.send_response['error']:
+            self.status = 'failed'
+        else:
+            self.status = 'finished'
+
+        self.logger.info(f"{self.status} |  {self.send_response['msg']}")
+        return self.send_response
 
     def update(self, **kwargs) -> dict:
         """
@@ -252,44 +286,33 @@ class ViteJsAdapter:
                        '-m', kwargs['mnemonics'],
                        '-i', kwargs['address_id']
                        ]
-            self.update_response = self._run_command(command)
+        else:
+            return {'error': 1, 'msg': f'missing args, any of {args}', 'data': None}
+            
+        self.update_response = self._run_command(command)
 
-            while self.update_response['error'] and try_counter:
-                try_counter -= 1
+        while self.update_response['error'] and try_counter:
+            try_counter -= 1
 
-                if 'timeout' in self.update_response['msg'].lower():
-                    self.logger.info(f"{self.update_response['msg']}, re-try update ({try_counter} left)")
-                    self._run_command(command)
-                elif 'no pending' in self.update_response['msg'].lower():
-                    self.update_response = {'error': 0, 'msg': "No pending transactions", 'data': None}
-                    break
-                else:
-                    break
-
-            if not try_counter:
-                self.update_response = {'error': 1, 'msg': "Too many failed attempts", 'data': None}
-                self.status = 'failed'
-
-            elif self.update_response['error']:
-                self.status = 'failed'
-
+            if 'timeout' in self.update_response['msg'].lower():
+                self.logger.info(f"{self.update_response['msg']}, re-try update ({try_counter} left)")
+                self._run_command(command)
+            elif 'no pending' in self.update_response['msg'].lower():
+                self.update_response = {'error': 0, 'msg': "No pending transactions", 'data': None}
+                break
             else:
-                self.status = 'finished'
+                break
+
+        if not try_counter:
+            self.update_response = {'error': 1, 'msg': "Too many failed attempts", 'data': None}
+            self.status = 'failed'
+        elif self.update_response['error']:
+            self.status = 'failed'
+        else:
+            self.status = 'finished'
 
         self.logger.info(f"{self.status} |  {self.update_response['msg']}")
         return self.update_response
-
-    def _get_last_tx_id(self, **kwargs) -> int:
-        kwargs = {'mnemonics': kwargs['mnemonics'],
-                  'address_id': kwargs['address_id']}
-        balance = self._balance(**kwargs)
-
-        if not balance['error']:
-            try:
-                return balance['data']['balance']['blockCount']
-            except Exception as e:
-                self.logger.warning(f"_get_last_tx_id(): {e}")
-        return 0
 
 
 if __name__ == '__main__':
