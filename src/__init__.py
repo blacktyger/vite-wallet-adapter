@@ -1,0 +1,249 @@
+import subprocess
+import time
+import os
+
+from .logger_ import get_logger
+
+
+DEFAULT_LOGGER = get_logger()
+SCRIPT_PATH = os.path.join(os.getcwd(), "vitejs/api_handler.js")
+
+
+class ViteJsAdapter:
+    """
+    Execute @vitejs functions via python class. Possible operations:
+    - Create new VITE wallet | create_wallet()
+    - Get wallet transactions | transactions()
+    - Receive pending transactions | update()
+    - Get wallet balance | get_balance()
+
+    Possible statuses: running, finished, failed
+    """
+
+    script = SCRIPT_PATH
+
+    def __init__(self, logger: object = None, nodejs_logs: bool = True, debug: bool = True, try_counter: int = 3):
+        """
+        :param nodejs_logs: bool, forward logs from nodejs script
+        :param debug: bool,  display debug logs
+        :param try_counter: int, how many try before failing
+        """
+        self.nodejs_logs = nodejs_logs
+        self.try_counter = try_counter
+        self.response: dict = dict()
+        self.last_log: str = ''
+        self.logger = logger if logger else DEFAULT_LOGGER
+        self.status = 'running'
+        self.debug = debug
+
+    def _run_command(self, command: list) -> dict:
+        """
+        Run NodeJS scripts with subprocess.Popen(), parse stdout
+        and return dictionary with script payload.
+        :param command: Full NodeJS command as list
+        :return: dict
+        """
+        logs_list = list()
+
+        # Run the command as subprocess and read output
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, text=True)
+
+        # While process is running collect and filter logs
+        while True:
+            output = process.stdout.readline()
+
+            if output == '' and process.poll() is not None:
+                # Process finished
+                break
+
+            if output.strip().startswith('>>'):
+                # Filter logs from NodeJS to self.logger
+                line = output.strip().replace('>>', 'node.js >>')
+
+                if self.nodejs_logs and self.last_log != line:
+                    self.logger.info(line)
+
+                self.last_log = line
+
+            elif output and not output.startswith((' >>', '>>')):
+                # Append parts of dictionary for return
+                logs_list.append(output)
+
+        # If process finished
+        if not process.poll():
+            try:
+                # Serialize stdout output and return dict
+                logs_list = [line.replace('null', 'None') for line in logs_list]
+                logs_list = [line.replace('true', 'True') for line in logs_list]
+                logs_list = [line.replace('false', 'False') for line in logs_list]
+                logs_json = ''.join([line.replace('\n', '') for line in logs_list])
+                logs_dict = eval(logs_json)
+                return logs_dict
+
+            except Exception as e:
+                return {'error': 1, 'msg': e, 'data': None}
+
+    def _balance(self, address: str = None, mnemonics: str = None, address_id: int | str = None) -> dict:
+        if address_id is None:
+            address_id = 0
+
+        if address:
+            command = ['node', self.script, 'balance', '-a', address]
+            return self._run_command(command)
+
+        if mnemonics:
+            address_id = str(address_id)
+            command = ['node', self.script, 'balance', '-a', '0', '-m', mnemonics, '-i', address_id]
+            return self._run_command(command)
+
+    def _get_last_tx_id(self, address: str = None, mnemonics: str = None) -> int:
+        balance = self._balance(address, mnemonics)
+
+        if not balance['error']:
+            try:
+                return balance['data']['balance']['blockCount']
+            except Exception as e:
+                self.logger.warning(f"_get_last_tx_id() error: {e}")
+        return 0
+
+    def _status_update(self) -> None:
+        fail_msg = "too many fail attempts"
+
+        if self.try_counter < 1:
+            self.response = {'error': 1, 'msg': fail_msg, 'data': None}
+            self.status = 'failed'
+        elif self.response['error']:
+            self.status = 'failed'
+            if self.debug:
+                self.logger.error(f"{self.status} |  {self.response['msg']}")
+        else:
+            self.status = 'finished'
+
+    def create_wallet(self):
+        """
+        Create new VITE wallet
+        :return: dict with raw mnemonic string and wallet address
+        """
+        command = ['node', self.script, 'create']
+        self.response = self._run_command(command)
+
+        return self.response
+
+    def get_balance(self, address: str = None, mnemonics: str = None, address_id: int | str = None) -> dict:
+        """
+        Get wallet balance from the VITE network, to get the balance mnemonics AND/OR address is required.
+        :param address: str, wallet address
+        :param mnemonics:, str, wallet mnemonic seed phrase
+        :param address_id: int | str, wallet address derivation path, default 0
+        """
+        self.response = self._balance(address, mnemonics, address_id)
+
+        while self.response['error'] and self.try_counter:
+            self.try_counter -= 1
+
+            if 'timeout' in self.response['msg'].lower():
+                self.logger.warning(f"{self.response['msg']} re-try balance ({self.try_counter} left)")
+                self._balance(address, mnemonics, address_id)
+            else:
+                return self.response
+
+        self._status_update()
+
+        return self.response
+
+    def get_transactions(self, address: str, page_index: int | str = 0, page_size: int | str = 20) -> dict:
+        """
+        Get wallet transactions from the VITE network
+        :param address: str, wallet address
+        :param page_index: str | int, default 0
+        :param page_size: str | int, default 20
+        """
+        page_index = str(page_index)
+        page_size = str(page_size)
+
+        command = ['node', self.script, 'transactions', '-a', address, '-i', page_index, '-s', page_size]
+
+        self.response = self._run_command(command)
+
+        while self.response['error'] and self.try_counter:
+            self.try_counter -= 1
+
+            if 'timeout' in self.response['msg'].lower():
+                self.logger.warning(f"{self.response['msg']} re-try {command[2]} ({self.try_counter} left)")
+                self._run_command(command)
+            else:
+                return self.response
+
+        self._status_update()
+
+        return self.response
+
+    def send_transaction(self, to_address: str, mnemonics: str, token_id: str, amount: str | float, address_id: int | str = 0) -> dict:
+        """
+        Send transaction on the VITE blockchain
+        :param to_address: str, wallet address
+        :param address_id; int, wallet address derivation path, default 0
+        :param mnemonics:, str, wallet mnemonic seed phrase
+        :param token_id: str, unique token id to send
+        :param amount: int | str, amount of the token to send
+        """
+        # Get sender's last transaction ID, later will be used to confirm that transaction was sent successfully.
+        last_tx_id = self._get_last_tx_id(mnemonics)
+
+        address_id = str(address_id)
+        amount = str(amount)
+        command = ['node', self.script, 'send', '-m', mnemonics, '-i', address_id, '-d', to_address, '-t', token_id, '-a', amount]
+
+        self.response = self._run_command(command)
+
+        while self.response['error'] and self.try_counter:
+            if 'timeout' in self.response['msg'].lower():
+                self.try_counter -= 1
+                time.sleep(1)
+                current_tx_id = self._get_last_tx_id(mnemonics)
+
+                while not current_tx_id:
+                    self.logger.warning(f"problem with getting balance, re-try...")
+                    current_tx_id = self._get_last_tx_id(mnemonics)
+
+                if current_tx_id == last_tx_id:
+                    self.logger.warning(f"{self.response['msg']}, re-try send ({self.try_counter} left)..")
+                    time.sleep(1)
+                    self.response = self._run_command(command)
+                else:
+                    if self.debug:
+                        self.logger.info(f"New TX last ID [{current_tx_id}], finishing process..")
+                    break
+            else:
+                break
+
+        self._status_update()
+
+        return self.response
+
+    def get_updates(self, mnemonics: str, address_id: str | int = 0) -> dict:
+        """
+        Update wallet balance by receiving pending transactions
+        :param mnemonics:, str, wallet mnemonic seed phrase
+        :param address_id; int, wallet address derivation path, default 0
+        """
+        address_id = str(address_id)
+        command = ['node', self.script, 'update', '-m', mnemonics, '-i', address_id]
+
+        self.response = self._run_command(command)
+
+        while self.response['error'] and self.try_counter:
+            self.try_counter -= 1
+
+            if 'timeout' in self.response['msg'].lower():
+                self.logger.info(f"{self.response['msg']}, re-try {command[2]} ({self.try_counter} left)")
+                self._run_command(command)
+            elif 'no pending' in self.response['msg'].lower():
+                self.response = {'error': 0, 'msg': "No pending transactions", 'data': None}
+                break
+            else:
+                break
+
+        self._status_update()
+
+        return self.response
