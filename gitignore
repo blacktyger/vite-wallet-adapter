@@ -1,0 +1,7 @@
+/vitejs/package-lock.json
+/vitejs/node_modules/
+/env/
+/vite_adapter.log
+/src/__pycache__/
+*.pyc
+/.idea/
