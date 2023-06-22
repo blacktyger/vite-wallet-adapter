@@ -3,6 +3,7 @@ import argparse
 from src import ViteJsAdapter
 
 
+# Manage script via CLI
 if __name__ == '__main__':
     provider = ViteJsAdapter(debug=False)
 
@@ -36,7 +37,7 @@ if __name__ == '__main__':
     send.add_argument("--amount", help="amount to send", required=True)
     send.add_argument("--token_id", "-t", help="vite token id", required=True)
 
-    # Update transaction command line arguments
+    # Update wallet pending transactions command line arguments
     update = command.add_parser('update', help='Update wallet by receiving pending transactions')
     update.add_argument("--mnemonics", "-m", help="sender's wallet mnemonic seed phrase", required=True)
     update.add_argument("--address_id", "-i", help="wallet address derivation path", required=False, default=0)

@@ -1,8 +1,25 @@
+"""
+This package is essentially a python wrapper for the @vite.js NODE.JS library
+In current implementation only basic functionality is available.
+https://github.com/blacktyger/vite-wallet-adapter
+
+Requirements:
+- Node.js and npm
+- Python 3.11
+
+@vite.js GitHub and documentation:
+- https://github.com/vitelabs/vite.js
+- https://docs.vite.org/vite-docs/vite.js/
+
+Author: blacktyg3r.com | BTLabs.tech
+"""
 import subprocess
+import threading
 import time
 import os
 
 from .logger_ import get_logger
+from .utils import Wallet, Token
 
 
 DEFAULT_LOGGER = get_logger()
@@ -28,6 +45,8 @@ class ViteJsAdapter:
         :param debug: bool,  display debug logs
         :param try_counter: int, how many try before failing
         """
+        self.listener_is_running: bool = False
+        self.listener_thread: threading.Thread | None = None
         self.nodejs_logs = nodejs_logs
         self.try_counter = try_counter
         self.response: dict = dict()
@@ -83,7 +102,7 @@ class ViteJsAdapter:
             except Exception as e:
                 return {'error': 1, 'msg': e, 'data': None}
 
-    def _balance(self, address: str = None, mnemonics: str = None, address_id: int | str = None) -> dict:
+    def _balance(self, address: str = None, mnemonics: str = None, address_id: int | str = None, **kwargs) -> dict:
         if address_id is None:
             address_id = 0
 
@@ -96,7 +115,7 @@ class ViteJsAdapter:
             command = ['node', self.script, 'balance', '-a', '0', '-m', mnemonics, '-i', address_id]
             return self._run_command(command)
 
-    def _get_last_tx_id(self, address: str = None, mnemonics: str = None) -> int:
+    def _get_last_tx_id(self, address: str = None, mnemonics: str = None, **kwargs) -> int:
         balance = self._balance(address, mnemonics)
 
         if not balance['error']:
@@ -106,7 +125,7 @@ class ViteJsAdapter:
                 self.logger.warning(f"_get_last_tx_id() error: {e}")
         return 0
 
-    def _status_update(self) -> None:
+    def _update_status(self) -> None:
         fail_msg = "too many fail attempts"
 
         if self.try_counter < 1:
@@ -129,7 +148,7 @@ class ViteJsAdapter:
 
         return self.response
 
-    def get_balance(self, address: str = None, mnemonics: str = None, address_id: int | str = None) -> dict:
+    def get_balance(self, address: str = None, mnemonics: str = None, address_id: int | str = None, **kwargs) -> dict:
         """
         Get wallet balance from the VITE network, to get the balance mnemonics AND/OR address is required.
         :param address: str, wallet address
@@ -147,11 +166,11 @@ class ViteJsAdapter:
             else:
                 return self.response
 
-        self._status_update()
+        self._update_status()
 
         return self.response
 
-    def get_transactions(self, address: str, page_index: int | str = 0, page_size: int | str = 20) -> dict:
+    def get_transactions(self, address: str, page_index: int | str = 0, page_size: int | str = 20, **kwargs) -> dict:
         """
         Get wallet transactions from the VITE network
         :param address: str, wallet address
@@ -174,11 +193,11 @@ class ViteJsAdapter:
             else:
                 return self.response
 
-        self._status_update()
+        self._update_status()
 
         return self.response
 
-    def send_transaction(self, to_address: str, mnemonics: str, token_id: str, amount: str | float, address_id: int | str = 0) -> dict:
+    def send_transaction(self, to_address: str, mnemonics: str, token_id: str, amount: str | float, address_id: int | str = 0, **kwargs) -> dict:
         """
         Send transaction on the VITE blockchain
         :param to_address: str, wallet address
@@ -217,11 +236,11 @@ class ViteJsAdapter:
             else:
                 break
 
-        self._status_update()
+        self._update_status()
 
         return self.response
 
-    def get_updates(self, mnemonics: str, address_id: str | int = 0) -> dict:
+    def get_updates(self, mnemonics: str, address_id: str | int = 0, **kwargs) -> dict:
         """
         Update wallet balance by receiving pending transactions
         :param mnemonics:, str, wallet mnemonic seed phrase
@@ -244,6 +263,88 @@ class ViteJsAdapter:
             else:
                 break
 
-        self._status_update()
+        self._update_status()
 
         return self.response
+
+    def _transaction_listener(self, *args) -> None:
+        wallets, tokens, interval, callback = args
+        first_run = True
+
+        while self.listener_is_running:
+            if not first_run:
+                time.sleep(interval)
+
+            first_run = False
+
+            for i, wallet in enumerate(wallets):
+                if self.debug:
+                    wallet_ = wallet.get('address', i)
+                    self.logger.debug(f"Processing wallet({wallet_})..")
+
+                balance_ = self.get_balance(**wallet)
+
+                if balance_['error']:
+                    if self.debug:
+                        self.logger.warning(f'error: {balance_["msg"]}')
+                    continue
+
+                pending = int(balance_['data']['unreceived']['blockCount'])
+                self.logger.info(f"tx_listener: {pending} new transactions")
+
+                if not pending:
+                    continue
+
+                update_ = self.get_updates(**wallet)
+
+                if update_['error']:
+                    if self.debug:
+                        self.logger.warning(f'error: {update_["msg"]}')
+                    continue
+
+                transactions_ = self.get_transactions(address=wallet['address'], page_size=pending + 1)
+
+                if transactions_['error']:
+                    if self.debug:
+                        self.logger.warning(f'error: {transactions_["msg"]}')
+                    continue
+
+                transactions = list()
+
+                for transaction in transactions_['data']:
+                    # Get only 'received' transactions (blockType == 4)
+                    if transaction['blockType'] != 4:
+                        continue
+
+                    # Filter transactions by token symbols
+                    if '__all__' in tokens:
+                        for token in tokens:
+                            if token.lower() in transaction['tokenInfo']['tokenSymbol'].lower():
+                                transactions.append(transaction)
+                    else:
+                        transactions.append(transaction)
+
+                if callback:
+                    callback(transactions)
+
+    def run_transaction_listener(self, tokens: list[str], wallets: list[dict[str, str, str | int]] = None,
+                                 interval: int = 10, callback=None):
+        """
+        :param tokens: list of str, if '__all__' in tokens return all
+        :param wallets: list of dictionaries {address: str, mnemonics: str, address_id: str | int}
+        :param interval: int, refresh time interval in seconds
+        :param callback: callback function to return list of new received transactions
+        """
+        args = (wallets, tokens, interval, callback)
+        self.listener_thread = threading.Thread(target=self._transaction_listener, args=args)
+        self.listener_is_running = True
+        self.listener_thread.start()
+        if self.debug:
+            self.logger.debug(f"Transaction listener started")
+
+    def stop_transaction_listener(self):
+        if self.listener_is_running:
+            if self.debug:
+                self.logger.debug(f"Stopping transaction listener..")
+            self.listener_is_running = False
+            self.listener_thread = None

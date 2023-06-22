@@ -49,7 +49,7 @@ async function getTransactions(address, pageIndex, pageSize) {
 
     // Handle error with VITE node
     if (!provider) { throw "ERROR Connection to VITE NODE" }
-    console.log(">> " + address, pageIndex, pageSize)
+    // console.log(">> " + address, pageIndex, pageSize)
     return provider.getTransactionList({address: address, pageIndex: pageIndex, pageSize: pageSize})
 }
 
@@ -113,13 +113,13 @@ async function receiveTransactions(mnemonics, address_id, callback={}, timeout) 
                 callback.data = data
                 callback.status = 'success'
                 ReceiveTask.stop();
-                log(data)
+                // log(data)
 
             } else {
                 // Update callback status and keep receiving
                 // callback.msg = "working on transaction " + (unreceivedBlocks.length + 1)
                 //     + "/" + callback.unreceived + '..'
-                callback.msg = `>> ${unreceivedBlocks.length + 1} / ${callback.unreceived} ${result.message}`
+                callback.msg = `${unreceivedBlocks.length + 1} / ${callback.unreceived} ${result.message}`
                 unreceivedBlocks.push(result.message)
                 successBlocks.push(result.message)
             }
