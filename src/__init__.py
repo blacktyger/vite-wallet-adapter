@@ -19,7 +19,6 @@ import time
 import os
 
 from .logger_ import get_logger
-from .utils import Wallet, Token
 
 
 DEFAULT_LOGGER = get_logger()
@@ -37,9 +36,7 @@ class ViteJsAdapter:
     Possible statuses: running, finished, failed
     """
 
-    script = SCRIPT_PATH
-
-    def __init__(self, logger: object = None, nodejs_logs: bool = True, debug: bool = True, try_counter: int = 3):
+    def __init__(self, logger: object = None, nodejs_logs: bool = True, debug: bool = True, try_counter: int = 3, script_path: str = None):
         """
         :param nodejs_logs: bool, forward logs from nodejs script
         :param debug: bool,  display debug logs
@@ -53,6 +50,7 @@ class ViteJsAdapter:
         self.last_log: str = ''
         self.logger = logger if logger else DEFAULT_LOGGER
         self.status = 'running'
+        self.script = script_path if script_path else SCRIPT_PATH
         self.debug = debug
 
     def _run_command(self, command: list) -> dict:

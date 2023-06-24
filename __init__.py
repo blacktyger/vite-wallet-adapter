@@ -16,5 +16,5 @@ Author: blacktyg3r.com | BTLabs.tech
 
 __version__ = '0.1'
 
-from src import ViteJsAdapter
+from .src import ViteJsAdapter
 
