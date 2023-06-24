@@ -121,7 +121,11 @@ export async function send(mnemonics, address_id, toAddress, tokenId, amount, ti
             console.log(">> sending " + (parseInt(amount) / 10 ** 8) + " completed")
             logAndExit(0, 'transaction success', result)
         }).catch(error => {
-            logAndExit(1, error.message)
+            if (typeof error === 'string' || error instanceof String) {
+                logAndExit(1, error)
+            } else {
+                logAndExit(1, error.message)
+            }
         })
     }
 }

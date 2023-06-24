@@ -41,6 +41,7 @@ class ViteJsAdapter:
         :param nodejs_logs: bool, forward logs from nodejs script
         :param debug: bool,  display debug logs
         :param try_counter: int, how many try before failing
+        :param script_path: str, path to the api_handler.js script, default is "./vitejs/api_handler.js"
         """
         self.listener_is_running: bool = False
         self.listener_thread: threading.Thread | None = None
