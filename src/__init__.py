@@ -15,6 +15,7 @@ Author: blacktyg3r.com | BTLabs.tech
 """
 import subprocess
 import threading
+import inspect
 import time
 import os
 
@@ -53,6 +54,18 @@ class ViteJsAdapter:
         self.status = 'running'
         self.script = script_path if script_path else SCRIPT_PATH
         self.debug = debug
+
+    def _default_error_response(self, msg: str = None):
+        func_name = inspect.stack()[1].function
+        if msg is None:
+            msg = f"Unknown vitejs error"
+
+        self.status = 'failed'
+
+        if self.debug:
+            self.logger.error(f"{func_name} | {self.status} | {msg}")
+
+        return {'error': 1, 'msg': msg, 'data': None}
 
     def _run_command(self, command: list) -> dict:
         """
@@ -104,15 +117,17 @@ class ViteJsAdapter:
     def _balance(self, address: str = None, mnemonics: str = None, address_id: int | str = None, **kwargs) -> dict:
         if address_id is None:
             address_id = 0
+        try:
+            if address:
+                command = ['node', self.script, 'balance', '-a', address]
+                return self._run_command(command)
 
-        if address:
-            command = ['node', self.script, 'balance', '-a', address]
-            return self._run_command(command)
-
-        if mnemonics:
-            address_id = str(address_id)
-            command = ['node', self.script, 'balance', '-a', '0', '-m', mnemonics, '-i', address_id]
-            return self._run_command(command)
+            if mnemonics:
+                address_id = str(address_id)
+                command = ['node', self.script, 'balance', '-a', '0', '-m', mnemonics, '-i', address_id]
+                return self._run_command(command)
+        except Exception as e:
+            return self._default_error_response(str(e))
 
     def _get_last_tx_id(self, address: str = None, mnemonics: str = None, **kwargs) -> int:
         balance = self._balance(address, mnemonics)
@@ -128,12 +143,9 @@ class ViteJsAdapter:
         fail_msg = "too many fail attempts"
 
         if self.try_counter < 1:
-            self.response = {'error': 1, 'msg': fail_msg, 'data': None}
-            self.status = 'failed'
+            self.response = self._default_error_response(fail_msg)
         elif self.response['error']:
-            self.status = 'failed'
-            if self.debug:
-                self.logger.error(f"{self.status} |  {self.response['msg']}")
+            self.response = self._default_error_response(self.response['msg'])
         else:
             self.status = 'finished'
 
@@ -180,21 +192,23 @@ class ViteJsAdapter:
         page_size = str(page_size)
 
         command = ['node', self.script, 'transactions', '-a', address, '-i', page_index, '-s', page_size]
+        try:
+            self.response = self._run_command(command)
 
-        self.response = self._run_command(command)
+            while self.response['error'] and self.try_counter:
+                self.try_counter -= 1
 
-        while self.response['error'] and self.try_counter:
-            self.try_counter -= 1
+                if 'timeout' in self.response['msg'].lower():
+                    self.logger.warning(f"{self.response['msg']} re-try {command[2]} ({self.try_counter} left)")
+                    self._run_command(command)
+                else:
+                    return self.response
 
-            if 'timeout' in self.response['msg'].lower():
-                self.logger.warning(f"{self.response['msg']} re-try {command[2]} ({self.try_counter} left)")
-                self._run_command(command)
-            else:
-                return self.response
+            self._update_status()
+            return self.response
 
-        self._update_status()
-
-        return self.response
+        except Exception as e:
+            self._default_error_response(str(e))
 
     def send_transaction(self, to_address: str, mnemonics: str, token_id: str, amount: str | float, address_id: int | str = 0, **kwargs) -> dict:
         """
@@ -212,32 +226,35 @@ class ViteJsAdapter:
         amount = str(amount)
         command = ['node', self.script, 'send', '-m', mnemonics, '-i', address_id, '-d', to_address, '-t', token_id, '-a', amount]
 
-        self.response = self._run_command(command)
+        try:
+            self.response = self._run_command(command)
 
-        while self.response['error'] and self.try_counter:
-            if 'timeout' in self.response['msg'].lower():
-                self.try_counter -= 1
-                time.sleep(1)
-                current_tx_id = self._get_last_tx_id(mnemonics)
-
-                while not current_tx_id:
-                    self.logger.warning(f"problem with getting balance, re-try...")
+            while self.response['error'] and self.try_counter:
+                if 'timeout' in self.response['msg'].lower():
+                    self.try_counter -= 1
+                    time.sleep(1)
                     current_tx_id = self._get_last_tx_id(mnemonics)
 
-                if current_tx_id == last_tx_id:
-                    self.logger.warning(f"{self.response['msg']}, re-try send ({self.try_counter} left)..")
-                    time.sleep(1)
-                    self.response = self._run_command(command)
+                    while not current_tx_id:
+                        self.logger.warning(f"problem with getting balance, re-try...")
+                        current_tx_id = self._get_last_tx_id(mnemonics)
+
+                    if current_tx_id == last_tx_id:
+                        self.logger.warning(f"{self.response['msg']}, re-try send ({self.try_counter} left)..")
+                        time.sleep(1)
+                        self.response = self._run_command(command)
+                    else:
+                        if self.debug:
+                            self.logger.info(f"New TX last ID [{current_tx_id}], finishing process..")
+                        break
                 else:
-                    if self.debug:
-                        self.logger.info(f"New TX last ID [{current_tx_id}], finishing process..")
                     break
-            else:
-                break
 
-        self._update_status()
+            self._update_status()
+            return self.response
 
-        return self.response
+        except Exception as e:
+            self._default_error_response(str(e))
 
     def get_updates(self, mnemonics: str, address_id: str | int = 0, **kwargs) -> dict:
         """
@@ -248,85 +265,91 @@ class ViteJsAdapter:
         address_id = str(address_id)
         command = ['node', self.script, 'update', '-m', mnemonics, '-i', address_id]
 
-        self.response = self._run_command(command)
+        try:
+            while self.response['error'] and self.try_counter:
+                self.response = self._run_command(command)
+                self.try_counter -= 1
 
-        while self.response['error'] and self.try_counter:
-            self.try_counter -= 1
+                if 'timeout' in self.response['msg'].lower():
+                    self.logger.info(f"{self.response['msg']}, re-try {command[2]} ({self.try_counter} left)")
+                    self._run_command(command)
+                elif 'no pending' in self.response['msg'].lower():
+                    self.response = {'error': 0, 'msg': "No pending transactions", 'data': None}
+                    break
+                else:
+                    break
 
-            if 'timeout' in self.response['msg'].lower():
-                self.logger.info(f"{self.response['msg']}, re-try {command[2]} ({self.try_counter} left)")
-                self._run_command(command)
-            elif 'no pending' in self.response['msg'].lower():
-                self.response = {'error': 0, 'msg': "No pending transactions", 'data': None}
-                break
-            else:
-                break
+            self._update_status()
+            return self.response
 
-        self._update_status()
-
-        return self.response
+        except Exception as e:
+            self._default_error_response(str(e))
 
     def _transaction_listener(self, *args) -> None:
         wallets, tokens, interval, callback = args
         first_run = True
 
-        while self.listener_is_running:
-            if not first_run:
-                time.sleep(interval)
+        try:
+            while self.listener_is_running:
+                if not first_run:
+                    time.sleep(interval)
 
-            first_run = False
+                first_run = False
 
-            for i, wallet in enumerate(wallets):
-                if self.debug:
-                    wallet_ = wallet.get('address', i)
-                    self.logger.debug(f"Processing wallet({wallet_})..")
-
-                balance_ = self.get_balance(**wallet)
-
-                if balance_['error']:
+                for i, wallet in enumerate(wallets):
                     if self.debug:
-                        self.logger.warning(f'error: {balance_["msg"]}')
-                    continue
+                        wallet_ = wallet.get('address', i)
+                        self.logger.debug(f"Processing wallet({wallet_})..")
 
-                pending = int(balance_['data']['unreceived']['blockCount'])
-                self.logger.info(f"tx_listener: {pending} new transactions")
+                    balance_ = self.get_balance(**wallet)
 
-                if not pending:
-                    continue
-
-                update_ = self.get_updates(**wallet)
-
-                if update_['error']:
-                    if self.debug:
-                        self.logger.warning(f'error: {update_["msg"]}')
-                    continue
-
-                transactions_ = self.get_transactions(address=wallet['address'], page_size=pending + 1)
-
-                if transactions_['error']:
-                    if self.debug:
-                        self.logger.warning(f'error: {transactions_["msg"]}')
-                    continue
-
-                transactions = list()
-
-                for transaction in transactions_['data']:
-                    # Get only 'received' transactions (blockType == 4)
-                    if transaction['blockType'] != 4:
+                    if balance_['error']:
+                        if self.debug:
+                            self.logger.warning(f'error: {balance_["msg"]}')
                         continue
 
-                    # Filter transactions by token symbols
-                    if '__all__' in tokens:
-                        transactions.append(transaction)
-                    else:
-                        for token in tokens:
-                            if token.lower() in transaction['tokenInfo']['tokenSymbol'].lower():
-                                transactions.append(transaction)
-                if callback:
-                    callback(transactions)
+                    pending = int(balance_['data']['unreceived']['blockCount'])
+                    self.logger.info(f"tx_listener: {pending} new transactions")
+
+                    if not pending:
+                        continue
+
+                    update_ = self.get_updates(**wallet)
+
+                    if update_['error']:
+                        if self.debug:
+                            self.logger.warning(f'error: {update_["msg"]}')
+                        continue
+
+                    transactions_ = self.get_transactions(address=wallet['address'], page_size=pending + 1)
+
+                    if transactions_['error']:
+                        if self.debug:
+                            self.logger.warning(f'error: {transactions_["msg"]}')
+                        continue
+
+                    transactions = list()
+
+                    for transaction in transactions_['data']:
+                        # Get only 'received' transactions (blockType == 4)
+                        if transaction['blockType'] != 4:
+                            continue
+
+                        # Filter transactions by token symbols
+                        if '__all__' in tokens:
+                            transactions.append(transaction)
+                        else:
+                            for token in tokens:
+                                if token.lower() in transaction['tokenInfo']['tokenSymbol'].lower():
+                                    transactions.append(transaction)
+                    if callback:
+                        callback(transactions)
+
+        except Exception as e:
+            self._default_error_response(str(e))
 
     def run_transaction_listener(self, tokens: list[str], wallets: list[dict[str, str, str | int]] = None,
-                                 interval: int = 10, callback=None):
+                                 interval: int = 10, callback=None) -> None:
         """
         Run background thread that will monitor given Vite wallets, update (receive)
         the new transactions and return them to the callback functions.
@@ -340,6 +363,7 @@ class ViteJsAdapter:
         self.listener_is_running = True
         self.listener_thread.daemon = True
         self.listener_thread.start()
+
         if self.debug:
             self.logger.debug(f"Transaction listener started")
 
