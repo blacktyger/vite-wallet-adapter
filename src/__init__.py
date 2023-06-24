@@ -318,31 +318,34 @@ class ViteJsAdapter:
 
                     # Filter transactions by token symbols
                     if '__all__' in tokens:
+                        transactions.append(transaction)
+                    else:
                         for token in tokens:
                             if token.lower() in transaction['tokenInfo']['tokenSymbol'].lower():
                                 transactions.append(transaction)
-                    else:
-                        transactions.append(transaction)
-
                 if callback:
                     callback(transactions)
 
     def run_transaction_listener(self, tokens: list[str], wallets: list[dict[str, str, str | int]] = None,
                                  interval: int = 10, callback=None):
         """
-        :param tokens: list of str, if '__all__' in tokens return all
-        :param wallets: list of dictionaries {address: str, mnemonics: str, address_id: str | int}
+        Run background thread that will monitor given Vite wallets, update (receive)
+        the new transactions and return them to the callback functions.
+        :param tokens: list of str, if tokens = ['__all__'] it will check for all of them
+        :param wallets: list of dictionaries {address: str, mnemonics: str, address_id(optional): str | int}
         :param interval: int, refresh time interval in seconds
         :param callback: callback function to return list of new received transactions
         """
         args = (wallets, tokens, interval, callback)
         self.listener_thread = threading.Thread(target=self._transaction_listener, args=args)
         self.listener_is_running = True
+        self.listener_thread.daemon = True
         self.listener_thread.start()
         if self.debug:
             self.logger.debug(f"Transaction listener started")
 
     def stop_transaction_listener(self):
+        """Stop the running transaction listener thread"""
         if self.listener_is_running:
             if self.debug:
                 self.logger.debug(f"Stopping transaction listener..")
